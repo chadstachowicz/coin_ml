@@ -40,9 +40,14 @@ LOG_DIR = 'runs/dual_cnn_' + datetime.now().strftime('%Y%m%d_%H%M%S')
 
 # Model hyperparameters
 IMAGE_SIZE = 512  # Full resolution
-BATCH_SIZE = 32     # Small batch due to large images
-NUM_EPOCHS = 50
+BATCH_SIZE = 16     # Small batch due to large images
+NUM_EPOCHS = 100
 LEARNING_RATE = 0.001
+
+# Class balancing options (IMPORTANT for imbalanced datasets!)
+MAX_SAMPLES_PER_CLASS = 300     # Limit max samples per class (e.g., 50, 100, None=no limit)
+USE_CLASS_WEIGHTS = False       # Weight loss by inverse class frequency
+USE_BALANCED_SAMPLING = False   # Use WeightedRandomSampler (slower but more balanced)
 
 # Device selection
 if torch.cuda.is_available():
@@ -78,7 +83,7 @@ print("="*60)
 class DualCoinDataset(Dataset):
     """Dataset that loads both obverse and reverse images for each coin."""
     
-    def __init__(self, data_dir, split='train', transform=None):
+    def __init__(self, data_dir, split='train', transform=None, max_samples_per_class=None):
         self.data_dir = Path(data_dir)
         self.transform = transform
         self.samples = []
@@ -86,6 +91,9 @@ class DualCoinDataset(Dataset):
         self.idx_to_class = {}
         
         grade_folders = sorted([d for d in self.data_dir.iterdir() if d.is_dir()])
+        
+        # First pass: collect samples by class
+        samples_by_class = {}
         
         for idx, grade_folder in enumerate(grade_folders):
             grade_name = grade_folder.name
@@ -109,17 +117,35 @@ class DualCoinDataset(Dataset):
                     cert_num = parts[2]
                     reverse_map[cert_num] = rev_img
             
+            class_samples = []
             for obverse_img in obverse_images:
                 parts = obverse_img.stem.split('-')
                 if len(parts) >= 3:
                     cert_num = parts[2]
                     if cert_num in reverse_map:
-                        self.samples.append({
+                        class_samples.append({
                             'obverse': obverse_img,
                             'reverse': reverse_map[cert_num],
                             'label': idx,
                             'grade': grade_name
                         })
+            
+            samples_by_class[idx] = class_samples
+        
+        # Apply class balancing if requested
+        if max_samples_per_class is not None and split == 'train':
+            print(f"\n📊 Class balancing (max {max_samples_per_class} per class):")
+            for idx, class_samples in samples_by_class.items():
+                before = len(class_samples)
+                if before > max_samples_per_class:
+                    np.random.seed(42 + idx)
+                    indices = np.random.choice(before, max_samples_per_class, replace=False)
+                    samples_by_class[idx] = [class_samples[i] for i in sorted(indices)]
+                    print(f"  {self.idx_to_class[idx]:8s}: {before:4d} → {max_samples_per_class:4d}")
+        
+        # Flatten samples
+        for class_samples in samples_by_class.values():
+            self.samples.extend(class_samples)
         
         # Split data (70% train, 20% test, 10% val)
         np.random.seed(42)
@@ -137,7 +163,17 @@ class DualCoinDataset(Dataset):
         
         self.samples = [self.samples[i] for i in indices]
         
-        print(f"{split.upper()}: {len(self.samples)} samples, {len(self.class_to_idx)} classes")
+        # Compute class distribution
+        from collections import Counter
+        label_counts = Counter([s['label'] for s in self.samples])
+        self.class_counts = label_counts  # Store for weighted loss/sampling
+        
+        print(f"\n{split.upper()}: {len(self.samples)} samples, {len(self.class_to_idx)} classes")
+        for grade_name in sorted(self.class_to_idx.keys()):
+            idx = self.class_to_idx[grade_name]
+            count = label_counts.get(idx, 0)
+            if count > 0:
+                print(f"  {grade_name:8s}: {count:4d} ({100*count/len(self.samples):5.1f}%)")
     
     def __len__(self):
         return len(self.samples)
@@ -162,9 +198,6 @@ print("\nConfiguring transforms...")
 
 train_transform = transforms.Compose([
     transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-    transforms.RandomHorizontalFlip(p=0.5),
-    transforms.RandomRotation(5),
-    transforms.ColorJitter(brightness=0.1, contrast=0.1),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -232,16 +265,16 @@ class DualCNNClassifier(nn.Module):
                 nn.MaxPool2d(2, 2),  # 125 → 62
                 
                 # Block 5: 512 → 512
-                nn.Conv2d(512, 512, kernel_size=3, padding=1),
-                nn.BatchNorm2d(512),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(512, 512, kernel_size=3, padding=1),
-                nn.BatchNorm2d(512),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(512, 512, kernel_size=3, padding=1),
-                nn.BatchNorm2d(512),
-                nn.ReLU(inplace=True),
-                nn.MaxPool2d(2, 2),  # 62 → 31
+                #nn.Conv2d(512, 512, kernel_size=3, padding=1),
+                #nn.BatchNorm2d(512),
+                #nn.ReLU(inplace=True),
+                #nn.Conv2d(512, 512, kernel_size=3, padding=1),
+                #nn.BatchNorm2d(512),
+                #nn.ReLU(inplace=True),
+                #nn.Conv2d(512, 512, kernel_size=3, padding=1),
+                #nn.BatchNorm2d(512),
+                #nn.ReLU(inplace=True),
+                #nn.MaxPool2d(2, 2),  # 62 → 31
                 
                 nn.AdaptiveAvgPool2d((1, 1))  # → 512
             )
@@ -254,10 +287,10 @@ class DualCNNClassifier(nn.Module):
         self.fusion = nn.Sequential(
             nn.Linear(512 * 2, 1024),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
+            nn.Dropout(0.4),
             nn.Linear(1024, 512),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.5)
+            nn.Dropout(0.4)
         )
         
         self.classifier = nn.Linear(512, num_classes)
@@ -354,16 +387,40 @@ def validate(model, loader, criterion, device, split='Val'):
 if __name__ == '__main__':
     # Create datasets
     print("\nCreating datasets...")
-    train_dataset = DualCoinDataset(DATA_DIR, split='train', transform=train_transform)
-    test_dataset = DualCoinDataset(DATA_DIR, split='test', transform=val_transform)
-    val_dataset = DualCoinDataset(DATA_DIR, split='val', transform=val_transform)
+    train_dataset = DualCoinDataset(DATA_DIR, split='train', transform=train_transform,
+                                    max_samples_per_class=MAX_SAMPLES_PER_CLASS)
+    test_dataset = DualCoinDataset(DATA_DIR, split='test', transform=val_transform,
+                                   max_samples_per_class=MAX_SAMPLES_PER_CLASS)
+    val_dataset = DualCoinDataset(DATA_DIR, split='val', transform=val_transform,
+                                  max_samples_per_class=MAX_SAMPLES_PER_CLASS)
     
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                              num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    # Use weighted sampling for class balance if requested
+    if USE_BALANCED_SAMPLING:
+        # Compute sample weights (inverse of class frequency)
+        class_sample_counts = [train_dataset.class_counts.get(i, 0) for i in range(len(train_dataset.class_to_idx))]
+        class_weights = 1.0 / torch.tensor([max(c, 1) for c in class_sample_counts], dtype=torch.float)
+        
+        # Assign weight to each sample based on its class
+        sample_weights = [class_weights[sample['label']].item() for sample in train_dataset.samples]
+        sampler = torch.utils.data.WeightedRandomSampler(
+            weights=sample_weights,
+            num_samples=len(sample_weights),
+            replacement=True
+        )
+        
+        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=sampler,
+                                 num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+        print("\n✓ Using WeightedRandomSampler")
+    else:
+        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,
+                                 num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False,
                              num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False,
                             num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    
+    print(f"Train: {len(train_loader)} batches")
     
     print(f"Train: {len(train_loader)} batches")
     print(f"Test: {len(test_loader)} batches")
@@ -385,7 +442,24 @@ if __name__ == '__main__':
     
     
     # Training setup
-    criterion = nn.CrossEntropyLoss()
+    # Loss function with optional class weights
+    if USE_CLASS_WEIGHTS:
+        class_sample_counts = [train_dataset.class_counts.get(i, 0) for i in range(len(train_dataset.class_to_idx))]
+        total_samples = sum(class_sample_counts)
+        class_weights = torch.tensor(
+            [total_samples / (len(class_sample_counts) * max(count, 1)) for count in class_sample_counts],
+            dtype=torch.float32
+        ).to(DEVICE)
+        
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+        print("\n✓ Weighted loss:")
+        for grade_name in sorted(train_dataset.class_to_idx.keys()):
+            idx = train_dataset.class_to_idx[grade_name]
+            if idx < len(class_weights):
+                print(f"  {grade_name:8s}: {class_weights[idx]:.2f}x")
+    else:
+        criterion = nn.CrossEntropyLoss()
+    
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1)
     writer = SummaryWriter(LOG_DIR)
