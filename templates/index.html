@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PCGS Coin Scraper</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#8b5cf6',
+                        secondary: '#ec4899',
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gradient-to-br from-purple-600 via-pink-500 to-orange-400 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-7xl">
+        <!-- Header -->
+        <header class="bg-white rounded-2xl shadow-2xl p-8 mb-8 text-center backdrop-blur-lg bg-opacity-95">
+            <div class="flex items-center justify-center gap-4 mb-4">
+                <i class="fas fa-coins text-6xl text-purple-600"></i>
+            </div>
+            <h1 class="text-5xl font-bold text-gray-800 mb-2">PCGS Coin Scraper</h1>
+            <p class="text-xl text-gray-600">Manage and organize your coin collection effortlessly</p>
+        </header>
+
+        <!-- Tab Navigation -->
+        <div class="bg-white rounded-2xl shadow-2xl mb-8 backdrop-blur-lg bg-opacity-95">
+            <div class="flex border-b border-gray-200">
+                <button onclick="switchTab('single')" id="singleTab" class="flex-1 py-4 px-6 text-center font-semibold text-lg transition-all duration-200 rounded-tl-2xl border-b-4 border-purple-600 text-purple-600">
+                    <i class="fas fa-plus-circle mr-2"></i>Single Cert
+                </button>
+                <button onclick="switchTab('bulk')" id="bulkTab" class="flex-1 py-4 px-6 text-center font-semibold text-lg transition-all duration-200 rounded-tr-2xl text-gray-500 hover:text-purple-600">
+                    <i class="fas fa-list mr-2"></i>Bulk Upload
+                </button>
+            </div>
+
+            <!-- Single Cert Tab -->
+            <div id="singleContent" class="p-8">
+                <h2 class="text-2xl font-bold text-gray-800 mb-6">Add Single Cert Number</h2>
+                <div class="flex gap-4">
+                    <input type="text" id="certInput" placeholder="Enter PCGS cert number (e.g., 12345678)" 
+                           class="flex-1 px-6 py-4 text-lg border-2 border-gray-300 rounded-xl focus:outline-none focus:border-purple-600 focus:ring-4 focus:ring-purple-200 transition-all duration-200" />
+                    <button id="addBtn" onclick="addCert()" 
+                            class="px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold text-lg rounded-xl hover:shadow-2xl hover:scale-105 transform transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100">
+                        <i class="fas fa-plus mr-2"></i>Add Cert
+                    </button>
+                </div>
+            </div>
+
+            <!-- Bulk Upload Tab -->
+            <div id="bulkContent" class="p-8 hidden">
+                <h2 class="text-2xl font-bold text-gray-800 mb-6">Bulk Upload Cert Numbers</h2>
+                <textarea id="bulkInput" placeholder="Enter cert numbers (one per line or comma-separated)&#10;Example:&#10;12345678&#10;87654321&#10;11223344" 
+                          class="w-full px-6 py-4 text-lg border-2 border-gray-300 rounded-xl focus:outline-none focus:border-purple-600 focus:ring-4 focus:ring-purple-200 transition-all duration-200 font-mono h-48 resize-none"></textarea>
+                <div class="flex gap-4 mt-4">
+                    <button onclick="processBulk()" id="bulkBtn"
+                            class="flex-1 px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold text-lg rounded-xl hover:shadow-2xl hover:scale-105 transform transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100">
+                        <i class="fas fa-cloud-upload-alt mr-2"></i>Process All
+                    </button>
+                    <button onclick="document.getElementById('bulkInput').value = ''"
+                            class="px-8 py-4 bg-gray-300 text-gray-700 font-semibold text-lg rounded-xl hover:bg-gray-400 transition-all duration-200">
+                        <i class="fas fa-times mr-2"></i>Clear
+                    </button>
+                </div>
+                <div id="bulkProgress" class="mt-6 hidden">
+                    <div class="bg-gray-200 rounded-full h-4 overflow-hidden">
+                        <div id="progressBar" class="bg-gradient-to-r from-purple-600 to-pink-600 h-full transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <p id="progressText" class="text-center mt-2 text-gray-700 font-semibold"></p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Messages -->
+        <div id="messageContainer" class="mb-8"></div>
+
+        <!-- Coins Collection -->
+        <div class="bg-white rounded-2xl shadow-2xl p-8 backdrop-blur-lg bg-opacity-95">
+            <div class="flex items-center justify-between mb-6">
+                <h2 class="text-3xl font-bold text-gray-800">
+                    <i class="fas fa-treasure-chest mr-3 text-purple-600"></i>
+                    Your Collection
+                    <span class="text-purple-600">(<span id="coinCount">0</span>)</span>
+                </h2>
+                <button onclick="loadCoins()" class="px-6 py-2 bg-purple-100 text-purple-600 font-semibold rounded-lg hover:bg-purple-200 transition-all duration-200">
+                    <i class="fas fa-sync-alt mr-2"></i>Refresh
+                </button>
+            </div>
+            <div id="coinsList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <!-- Coins will be loaded here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Image Modal -->
+    <div id="imageModal" class="hidden fixed inset-0 bg-black bg-opacity-90 z-50 flex items-center justify-center p-4" onclick="closeImageModal()">
+        <button class="absolute top-4 right-4 text-white text-4xl hover:text-gray-300 transition-colors duration-200" onclick="closeImageModal()">
+            <i class="fas fa-times"></i>
+        </button>
+        <img id="modalImage" class="max-w-full max-h-full object-contain rounded-lg shadow-2xl" onclick="event.stopPropagation()">
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
+

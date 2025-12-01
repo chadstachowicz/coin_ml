@@ -1,0 +1,12 @@
+# David Lawrence Inventory IDs
+# Add one inventory ID per line or comma-separated
+# Example: https://davidlawrence.com/inventory/789518
+#          The inventory ID is: 789518
+
+789518
+
+# Add more IDs below (one per line):
+# 789519
+# 789520
+# 789521
+
