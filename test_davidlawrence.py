@@ -132,3 +132,4 @@ if __name__ == '__main__':
     print("2. Check if images are loaded via JavaScript")
     print("3. If JavaScript-heavy, we need Selenium/Playwright")
 
+

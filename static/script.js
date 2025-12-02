@@ -388,3 +388,4 @@ function closeImageModal() {
     document.body.style.overflow = 'auto'; // Re-enable scrolling
 }
 
+

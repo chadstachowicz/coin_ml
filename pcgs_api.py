@@ -103,3 +103,4 @@ class PCGSClient:
             print(f"Error downloading image from {image_url}: {e}")
             return False
 
+

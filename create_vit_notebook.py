@@ -426,3 +426,4 @@ print(f"  Total cells: {len(cells)}")
 print(f"  Markdown: {sum(1 for c in cells if c['cell_type'] == 'markdown')}")
 print(f"  Code: {sum(1 for c in cells if c['cell_type'] == 'code')}")
 
+

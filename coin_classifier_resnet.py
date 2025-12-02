@@ -35,15 +35,15 @@ import matplotlib.pyplot as plt
 # ============================================================================
 
 # Paths
-DATA_DIR = 'davidlawrence_dataset/Proof'
+DATA_DIR = 'davidlawrence_dataset/Circulation'
 OUTPUT_DIR = 'models'
 LOG_DIR = 'runs/resnet_dual_' + datetime.now().strftime('%Y%m%d_%H%M%S')
 
 # Model hyperparameters
-IMAGE_SIZE = 1000  # Full resolution
-BATCH_SIZE = 2     # Small batch due to large images
+IMAGE_SIZE = 512  # Full resolution
+BATCH_SIZE = 8     # Small batch due to large images
 NUM_EPOCHS = 50
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 1e-3
 FREEZE_BACKBONE = True  # Freeze early ResNet layers initially
 UNFREEZE_EPOCH = 15     # Unfreeze all layers after this epoch
 
@@ -608,4 +608,5 @@ print(f"  Config: {OUTPUT_DIR}/config_resnet.json")
 print(f"  Plots: {OUTPUT_DIR}/training_history_resnet.png")
 print(f"\n✓ All done! Best validation accuracy: {best_val_acc:.2f}%")
 print(f"✓ Test accuracy: {test_acc:.2f}%")
+
 

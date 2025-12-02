@@ -202,3 +202,4 @@ Typically gives 2-5% accuracy boost!
 
 **Bottom Line**: Start with Custom CNN if you have good data and GPU. Fall back to ResNet-50 if you need speed or have limited resources. You can't go wrong with either! 🎯
 
+
