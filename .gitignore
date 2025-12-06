@@ -18,6 +18,7 @@ davidlawrence*
 models/
 runs/
 coin_dataset/
+*.pth
 
 # IDE
 .vscode/
