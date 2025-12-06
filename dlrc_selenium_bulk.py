@@ -3,7 +3,7 @@ David Lawrence Selenium Bulk Scraper
 Discovers inventory IDs from listing URLs and scrapes all coins
 """
 
-from davidlawrence_selenium_scraper import DavidLawrenceSeleniumScraper
+from dlrc_selenium_scraper import DavidLawrenceSeleniumScraper
 from selenium.webdriver.common.by import By
 import os
 import re

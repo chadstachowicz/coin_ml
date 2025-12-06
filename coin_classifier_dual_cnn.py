@@ -129,7 +129,7 @@ class DualCoinDataset(Dataset):
                             'label': idx,
                             'grade': grade_name
                         })
-            
+        
             samples_by_class[idx] = class_samples
         
         # Apply class balancing if requested
@@ -147,19 +147,17 @@ class DualCoinDataset(Dataset):
         for class_samples in samples_by_class.values():
             self.samples.extend(class_samples)
         
-        # Split data (70% train, 20% test, 10% val)
+        # Split data (80% train, 20% test)
+        # Note: test set is also used as validation during training
         np.random.seed(42)
         indices = np.random.permutation(len(self.samples))
         
-        n_train = int(0.7 * len(self.samples))
-        n_test = int(0.2 * len(self.samples))
+        n_train = int(0.8 * len(self.samples))
         
         if split == 'train':
             indices = indices[:n_train]
-        elif split == 'test':
-            indices = indices[n_train:n_train + n_test]
-        else:
-            indices = indices[n_train + n_test:]
+        else:  # test (also used as val)
+            indices = indices[n_train:]
         
         self.samples = [self.samples[i] for i in indices]
         
@@ -385,14 +383,13 @@ def validate(model, loader, criterion, device, split='Val'):
 # ============================================================================
 
 if __name__ == '__main__':
-    # Create datasets
+    # Create datasets (80/20 split, test set used as validation)
     print("\nCreating datasets...")
     train_dataset = DualCoinDataset(DATA_DIR, split='train', transform=train_transform,
                                     max_samples_per_class=MAX_SAMPLES_PER_CLASS)
     test_dataset = DualCoinDataset(DATA_DIR, split='test', transform=val_transform,
                                    max_samples_per_class=MAX_SAMPLES_PER_CLASS)
-    val_dataset = DualCoinDataset(DATA_DIR, split='val', transform=val_transform,
-                                  max_samples_per_class=MAX_SAMPLES_PER_CLASS)
+    val_dataset = test_dataset  # Use test set as validation during training
     
     # Use weighted sampling for class balance if requested
     if USE_BALANCED_SAMPLING:
@@ -412,15 +409,15 @@ if __name__ == '__main__':
                                  num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
         print("\n✓ Using WeightedRandomSampler")
     else:
-        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                                 num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,
+                              num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
     
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False,
                              num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False,
-                            num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    val_loader = test_loader  # Use test loader as validation
     
     print(f"Train: {len(train_loader)} batches")
+    print(f"Test/Val: {len(test_loader)} batches (same set)")
     
     print(f"Train: {len(train_loader)} batches")
     print(f"Test: {len(test_loader)} batches")
@@ -458,7 +455,7 @@ if __name__ == '__main__':
             if idx < len(class_weights):
                 print(f"  {grade_name:8s}: {class_weights[idx]:.2f}x")
     else:
-        criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss()
     
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1)

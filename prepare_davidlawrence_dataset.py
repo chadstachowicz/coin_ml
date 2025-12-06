@@ -2,7 +2,7 @@
 """
 Prepare David Lawrence Coins for Training
 
-Processes davidlawrence_coins folder and organizes images into training format:
+Processes all davidlawrence_coins* folders and organizes images into training format:
 - Reads grade from JSON files
 - Identifies obverse (_2) and reverse (_3) images
 - Separates Proof and Circulation coins based on description
@@ -11,16 +11,17 @@ Processes davidlawrence_coins folder and organizes images into training format:
   - davidlawrence_dataset/Circulation/<grade>/obverse/ and davidlawrence_dataset/Circulation/<grade>/reverse/
 
 Usage:
-  # Test with first 10 coins
+  # Test with first 10 coins from each folder
   python prepare_davidlawrence_dataset.py --test 10
   
-  # Process all coins
+  # Process all coins from all davidlawrence_coins* folders
   python prepare_davidlawrence_dataset.py --all
 """
 
 import json
 import shutil
 import argparse
+import glob
 from pathlib import Path
 from collections import defaultdict
 
@@ -86,49 +87,61 @@ def normalize_grade(grade_str):
         return grade_str.lower()
 
 
-def process_davidlawrence_coins(source_dir='davidlawrence_coins', 
+def find_source_directories(pattern='davidlawrence_coins*'):
+    """
+    Find all directories matching the pattern.
+    
+    Args:
+        pattern: Glob pattern to match directories
+        
+    Returns:
+        list: List of Path objects for matching directories
+    """
+    matches = glob.glob(pattern)
+    # Filter to only directories that have data/ and images/ subdirs
+    valid_dirs = []
+    for match in matches:
+        path = Path(match)
+        if path.is_dir() and (path / 'data').exists() and (path / 'images').exists():
+            valid_dirs.append(path)
+    return sorted(valid_dirs)
+
+
+def process_davidlawrence_coins(source_pattern='davidlawrence_coins*', 
                                  output_dir='davidlawrence_dataset',
-                                 max_coins=None,
+                                 max_coins_per_folder=None,
                                  dry_run=False):
     """
     Process David Lawrence coins into training format.
     
     Args:
-        source_dir: Directory with data/ and images/ subdirectories
+        source_pattern: Glob pattern to match source directories (e.g. 'davidlawrence_coins*')
         output_dir: Output directory for organized dataset
-        max_coins: Maximum number of coins to process (None = all)
+        max_coins_per_folder: Maximum number of coins to process per folder (None = all)
         dry_run: If True, show what would be done without copying
     """
-    source_path = Path(source_dir)
     output_path = Path(output_dir)
     
-    data_dir = source_path / 'data'
-    images_dir = source_path / 'images'
+    # Find all matching source directories
+    source_dirs = find_source_directories(source_pattern)
     
-    if not data_dir.exists():
-        print(f"❌ Error: {data_dir} not found")
+    if not source_dirs:
+        print(f"❌ Error: No directories found matching '{source_pattern}' with data/ and images/ subdirectories")
         return
-    
-    if not images_dir.exists():
-        print(f"❌ Error: {images_dir} not found")
-        return
-    
-    # Get all JSON files
-    json_files = sorted(list(data_dir.glob('*.json')))
-    
-    if max_coins:
-        json_files = json_files[:max_coins]
     
     print("="*60)
     print("DAVID LAWRENCE DATASET PREPARATION")
     print("="*60)
-    print(f"Source: {source_dir}")
+    print(f"Source pattern: {source_pattern}")
+    print(f"Found {len(source_dirs)} source directories:")
+    for sd in source_dirs:
+        json_count = len(list((sd / 'data').glob('*.json')))
+        print(f"  - {sd.name}: {json_count} coins")
     print(f"Output: {output_dir}")
-    print(f"Total JSON files: {len(json_files)}")
-    if max_coins:
-        print(f"Processing: First {max_coins} coins (TEST MODE)")
+    if max_coins_per_folder:
+        print(f"Processing: First {max_coins_per_folder} coins per folder (TEST MODE)")
     else:
-        print(f"Processing: ALL coins")
+        print(f"Processing: ALL coins from ALL folders")
     if dry_run:
         print(f"Mode: DRY RUN (no files will be copied)")
     print("="*60)
@@ -142,106 +155,134 @@ def process_davidlawrence_coins(source_dir='davidlawrence_coins',
         'missing_reverse': 0,
         'proof_count': 0,
         'circulation_count': 0,
-        'by_grade': defaultdict(int)
+        'by_grade': defaultdict(int),
+        'by_source': defaultdict(int)
     }
     
-    # Process each coin
-    for json_file in json_files:
-        stats['total'] += 1
-        inventory_id = json_file.stem
+    # Helper function for sanitizing filenames
+    def sanitize(val, max_len=20):
+        """Sanitize a value for use in filename."""
+        s = str(val).replace('/', '-').replace('\\', '-').replace(' ', '')
+        s = ''.join(c for c in s if c.isalnum() or c in '-_$.')
+        return s[:max_len]
+    
+    # Process each source directory
+    for source_path in source_dirs:
+        data_dir = source_path / 'data'
+        images_dir = source_path / 'images'
         
-        # Read JSON data
-        try:
-            with open(json_file, 'r') as f:
-                coin_data = json.load(f)
-        except Exception as e:
-            print(f"⚠️  Error reading {json_file.name}: {e}")
-            continue
+        # Get all JSON files from this source
+        json_files = sorted(list(data_dir.glob('*.json')))
         
-        # Extract grade
-        grade = coin_data.get('grade')
-        if not grade:
-            stats['missing_grade'] += 1
-            print(f"⚠️  {inventory_id}: No grade found")
-            continue
+        if max_coins_per_folder:
+            json_files = json_files[:max_coins_per_folder]
         
-        grade_folder = normalize_grade(grade)
+        print(f"\n--- Processing: {source_path.name} ({len(json_files)} coins) ---")
         
-        # Determine if coin is Proof or Circulation based on description
-        description = coin_data.get('description', '')
-        is_proof = 'proof' in description.lower()
-        
-        # Set the root category folder
-        category_folder = 'Proof' if is_proof else 'Circulation'
-        
-        if is_proof:
-            stats['proof_count'] += 1
-        else:
-            stats['circulation_count'] += 1
-        
-        # Find obverse (_2) and reverse (_3) images
-        obverse_img = None
-        reverse_img = None
-        
-        for img_path_str in coin_data.get('images', []):
-            img_path = Path(img_path_str)
+        # Process each coin in this source
+        for json_file in json_files:
+            stats['total'] += 1
+            inventory_id = json_file.stem
             
-            # Check if it's _2 (obverse) or _3 (reverse)
-            if img_path.stem.endswith('_2'):
-                if img_path.exists():
-                    obverse_img = img_path
-            elif img_path.stem.endswith('_3'):
-                if img_path.exists():
-                    reverse_img = img_path
-        
-        # Check if we have both images
-        if not obverse_img:
-            stats['missing_obverse'] += 1
-            print(f"⚠️  {inventory_id}: Missing obverse image (_2)")
-            continue
-        
-        if not reverse_img:
-            stats['missing_reverse'] += 1
-            print(f"⚠️  {inventory_id}: Missing reverse image (_3)")
-            continue
-        
-        # Create output directories with category folder
-        grade_dir = output_path / category_folder / grade_folder
-        obverse_dir = grade_dir / 'obverse'
-        reverse_dir = grade_dir / 'reverse'
-        
-        if not dry_run:
-            obverse_dir.mkdir(parents=True, exist_ok=True)
-            reverse_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Copy images with consistent naming
-        # Format: <grade>-<grading_service>-<year>-<denomination>-<cert_number>.jpg
-        cert_num = coin_data.get('cert_number', 'unknown')
-        year = coin_data.get('year', 'nodate')
-        denomination = coin_data.get('denomination', 'unknown')
-        grading_service = coin_data.get('grading_service', 'UNK')
-        
-        # Clean up values for filename
-        safe_cert = str(cert_num).replace('/', '-').replace('\\', '-')
-        safe_year = str(year).replace('/', '-').replace('\\', '-')
-        safe_denom = str(denomination).replace('/', '-').replace('\\', '-').replace(' ', '')
-        safe_service = str(grading_service).upper()[:4]  # NGC, PCGS, etc (max 4 chars)
-        
-        filename = f"{grade_folder}-{safe_service}-{safe_year}-{safe_denom}-{safe_cert}.jpg"
-        
-        obverse_dest = obverse_dir / filename
-        reverse_dest = reverse_dir / filename
-        
-        if dry_run:
-            print(f"✓ {inventory_id} (Grade: {grade_folder})")
-            print(f"  Obverse: {obverse_img.name} → {obverse_dest}")
-            print(f"  Reverse: {reverse_img.name} → {reverse_dest}")
-        else:
-            shutil.copy2(obverse_img, obverse_dest)
-            shutil.copy2(reverse_img, reverse_dest)
-        
-        stats['success'] += 1
-        stats['by_grade'][grade_folder] += 1
+            # Read JSON data
+            try:
+                with open(json_file, 'r') as f:
+                    coin_data = json.load(f)
+            except Exception as e:
+                print(f"⚠️  Error reading {json_file.name}: {e}")
+                continue
+            
+            # Extract grade
+            grade = coin_data.get('grade')
+            if not grade:
+                stats['missing_grade'] += 1
+                print(f"⚠️  {inventory_id}: No grade found")
+                continue
+            
+            grade_folder = normalize_grade(grade)
+            
+            # Determine if coin is Proof or Circulation based on description
+            description = coin_data.get('description', '')
+            is_proof = 'proof' in description.lower()
+            
+            # Set the root category folder
+            category_folder = 'Proof' if is_proof else 'Circulation'
+            
+            if is_proof:
+                stats['proof_count'] += 1
+            else:
+                stats['circulation_count'] += 1
+            
+            # Find obverse (_2) and reverse (_3) images
+            obverse_img = None
+            reverse_img = None
+            
+            for img_path_str in coin_data.get('images', []):
+                img_path = Path(img_path_str)
+                
+                # Check if it's _2 (obverse) or _3 (reverse)
+                if img_path.stem.endswith('_2'):
+                    if img_path.exists():
+                        obverse_img = img_path
+                    else:
+                        local_img = images_dir / img_path.name
+                        if local_img.exists():
+                            obverse_img = local_img
+                elif img_path.stem.endswith('_3'):
+                    if img_path.exists():
+                        reverse_img = img_path
+                    else:
+                        local_img = images_dir / img_path.name
+                        if local_img.exists():
+                            reverse_img = local_img
+            
+            # Check if we have both images
+            if not obverse_img:
+                stats['missing_obverse'] += 1
+                print(f"⚠️  {inventory_id}: Missing obverse image (_2)")
+                continue
+            
+            if not reverse_img:
+                stats['missing_reverse'] += 1
+                print(f"⚠️  {inventory_id}: Missing reverse image (_3)")
+                continue
+            
+            # Create output directories with category folder
+            grade_dir = output_path / category_folder / grade_folder
+            obverse_dir = grade_dir / 'obverse'
+            reverse_dir = grade_dir / 'reverse'
+            
+            if not dry_run:
+                obverse_dir.mkdir(parents=True, exist_ok=True)
+                reverse_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Copy images with consistent naming
+            cert_num = coin_data.get('cert_number', 'unknown')
+            year = coin_data.get('year', 'nodate')
+            denomination = coin_data.get('denomination', 'unknown')
+            grading_service = coin_data.get('grading_service', 'UNK')
+            
+            safe_cert = sanitize(cert_num, 30)
+            safe_year = sanitize(year, 10)
+            safe_denom = sanitize(denomination, 10)
+            safe_service = str(grading_service).upper()[:4]
+            
+            filename = f"{grade_folder}-{safe_service}-{safe_year}-{safe_denom}-{safe_cert}.jpg"
+            
+            obverse_dest = obverse_dir / filename
+            reverse_dest = reverse_dir / filename
+            
+            if dry_run:
+                print(f"✓ {inventory_id} (Grade: {grade_folder})")
+                print(f"  Obverse: {obverse_img.name} → {obverse_dest}")
+                print(f"  Reverse: {reverse_img.name} → {reverse_dest}")
+            else:
+                shutil.copy2(obverse_img, obverse_dest)
+                shutil.copy2(reverse_img, reverse_dest)
+            
+            stats['success'] += 1
+            stats['by_grade'][grade_folder] += 1
+            stats['by_source'][source_path.name] += 1
     
     # Print summary
     print("\n" + "="*60)
@@ -254,6 +295,10 @@ def process_davidlawrence_coins(source_dir='davidlawrence_coins',
     print(f"Missing grade: {stats['missing_grade']}")
     print(f"Missing obverse: {stats['missing_obverse']}")
     print(f"Missing reverse: {stats['missing_reverse']}")
+    print("\nCoins by source folder:")
+    for source, count in sorted(stats['by_source'].items()):
+        print(f"  {source}: {count} pairs")
+    
     print("\nCoins by grade:")
     for grade, count in sorted(stats['by_grade'].items(), key=lambda x: x[1], reverse=True):
         print(f"  {grade}: {count} pairs")
@@ -275,28 +320,31 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Test with first 10 coins (dry run)
+  # Test with first 10 coins per folder (dry run)
   %(prog)s --test 10 --dry-run
   
-  # Process first 10 coins
+  # Process first 10 coins per folder
   %(prog)s --test 10
   
-  # Process all coins
+  # Process all coins from all davidlawrence_coins* folders
   %(prog)s --all
   
   # Custom output directory
   %(prog)s --all --output my_dataset
+  
+  # Use a specific source pattern
+  %(prog)s --all --source "davidlawrence_coins_buffalo"
         """
     )
     
     parser.add_argument('--test', type=int, metavar='N', 
-                       help='Test mode: process only first N coins')
+                       help='Test mode: process only first N coins per folder')
     parser.add_argument('--all', action='store_true',
-                       help='Process all coins')
+                       help='Process all coins from all matching folders')
     parser.add_argument('--output', '-o', default='davidlawrence_dataset',
                        help='Output directory (default: davidlawrence_dataset)')
-    parser.add_argument('--source', '-s', default='davidlawrence_coins',
-                       help='Source directory (default: davidlawrence_coins)')
+    parser.add_argument('--source', '-s', default='davidlawrence_coins*',
+                       help='Source directory pattern (default: davidlawrence_coins*)')
     parser.add_argument('--dry-run', action='store_true',
                        help='Show what would be done without copying files')
     
@@ -313,9 +361,9 @@ Examples:
         return
     
     process_davidlawrence_coins(
-        source_dir=args.source,
+        source_pattern=args.source,
         output_dir=args.output,
-        max_coins=max_coins,
+        max_coins_per_folder=max_coins,
         dry_run=args.dry_run
     )
 

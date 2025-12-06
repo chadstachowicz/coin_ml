@@ -40,12 +40,12 @@ OUTPUT_DIR = 'models'
 LOG_DIR = 'runs/resnet_dual_' + datetime.now().strftime('%Y%m%d_%H%M%S')
 
 # Model hyperparameters
-IMAGE_SIZE = 512  # Full resolution
-BATCH_SIZE = 8     # Small batch due to large images
+IMAGE_SIZE = 448  # Full resolution
+BATCH_SIZE = 16     # Small batch due to large images
 NUM_EPOCHS = 50
 LEARNING_RATE = 1e-3
 FREEZE_BACKBONE = True  # Freeze early ResNet layers initially
-UNFREEZE_EPOCH = 15     # Unfreeze all layers after this epoch
+UNFREEZE_EPOCH = 25     # Unfreeze all layers after this epoch
 
 # Device selection
 if torch.cuda.is_available():
@@ -124,19 +124,17 @@ class DualCoinDataset(Dataset):
                 else:
                     print(f"Warning: No matching reverse for {obverse_img.name}")
         
-        # Split data (70% train, 20% test, 10% val)
+        # Split data (80% train, 20% test)
+        # Note: test set is also used as validation during training
         np.random.seed(42)
         indices = np.random.permutation(len(self.samples))
         
-        n_train = int(0.7 * len(self.samples))
-        n_test = int(0.2 * len(self.samples))
+        n_train = int(0.8 * len(self.samples))
         
         if split == 'train':
             indices = indices[:n_train]
-        elif split == 'test':
-            indices = indices[n_train:n_train + n_test]
-        else:  # val
-            indices = indices[n_train + n_test:]
+        else:  # test (also used as val)
+            indices = indices[n_train:]
         
         self.samples = [self.samples[i] for i in indices]
         
@@ -170,9 +168,22 @@ class DualCoinDataset(Dataset):
 # Training transforms - minimal augmentation to preserve detail
 train_transform = transforms.Compose([
     transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-    transforms.RandomHorizontalFlip(p=0.5),
-    transforms.ColorJitter(brightness=0.1, contrast=0.1),
+    transforms.RandomRotation(degrees=5, fill=(255, 255, 255)),
     transforms.ToTensor(),
+        transforms.RandomAffine(
+        degrees=0,              # rotation already handled
+        translate=(0.03, 0.03), # small shifts in x/y
+        scale=(0.95, 1.05),     # small zoom in/out
+        fill=(255, 255, 255)
+    ),
+
+    # Photometric: tiny lighting/contrast wiggles
+    transforms.ColorJitter(
+        brightness=0.05,
+        contrast=0.05,
+        saturation=0.05,
+        hue=0.01
+    ),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
@@ -190,10 +201,10 @@ print("\n✓ Transforms configured")
 # CREATE DATASETS AND DATALOADERS
 # ============================================================================
 
-# Create datasets
+# Create datasets (80/20 split, test set used as validation)
 train_dataset = DualCoinDataset(DATA_DIR, split='train', transform=train_transform)
 test_dataset = DualCoinDataset(DATA_DIR, split='test', transform=val_transform)
-val_dataset = DualCoinDataset(DATA_DIR, split='val', transform=val_transform)
+val_dataset = test_dataset  # Use test set as validation during training
 
 # Create dataloaders
 train_loader = DataLoader(
@@ -212,18 +223,11 @@ test_loader = DataLoader(
     pin_memory=PIN_MEMORY
 )
 
-val_loader = DataLoader(
-    val_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=False,
-    num_workers=NUM_WORKERS,
-    pin_memory=PIN_MEMORY
-)
+val_loader = test_loader  # Use test loader as validation
 
 print(f"\nDataloaders created:")
 print(f"  Train batches: {len(train_loader)}")
-print(f"  Test batches: {len(test_loader)}")
-print(f"  Val batches: {len(val_loader)}")
+print(f"  Test/Val batches: {len(test_loader)} (same set used for both)")
 
 
 # ============================================================================
@@ -262,7 +266,7 @@ class DualResNetClassifier(nn.Module):
             nn.Linear(self.feature_dim * 2, 2048),
             nn.BatchNorm1d(2048),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.5)
+            nn.Dropout(0.1)
         )
         
         # Classification head
@@ -270,11 +274,11 @@ class DualResNetClassifier(nn.Module):
             nn.Linear(2048, 1024),
             nn.BatchNorm1d(1024),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
+            nn.Dropout(0.1),
             nn.Linear(1024, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
+            nn.Dropout(0.1),
             nn.Linear(512, num_classes)
         )
     
