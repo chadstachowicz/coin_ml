@@ -11,6 +11,7 @@ Uses dual-image input (obverse + reverse) with ResNet backbone.
 import os
 import re
 import json
+import glob
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -27,12 +28,12 @@ from torch.utils.tensorboard import SummaryWriter
 # CONFIGURATION
 # ============================================================================
 
-DATA_DIRS = [
-    'davidlawrence_coins',
-    'davidlawrence_coins_indians',
-    'davidlawrence_coins_two_cent',
-    'davidlawrence_coins_3cs',
-]
+# Find all davidlawrence_coins* directories with data/ subdirectory
+DATA_DIRS = sorted([
+    d for d in glob.glob('davidlawrence_coins*') 
+    if os.path.isdir(d) and os.path.exists(os.path.join(d, 'data'))
+])
+print(f"Found {len(DATA_DIRS)} data directories: {DATA_DIRS}")
 
 OUTPUT_DIR = 'models'
 LOG_DIR = 'runs/year_mintmark'

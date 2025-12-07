@@ -50,12 +50,12 @@ OUTPUT_DIR = 'models'
 LOG_DIR = 'runs/ordinal_' + datetime.now().strftime('%Y%m%d_%H%M%S')
 
 # Model hyperparameters
-IMAGE_SIZE = 512
+IMAGE_SIZE = 768
 BATCH_SIZE = 16
 NUM_EPOCHS = 50
 LEARNING_RATE = 1e-3
 FREEZE_BACKBONE = True
-UNFREEZE_EPOCH = 15
+UNFREEZE_EPOCH = 20
 
 # Regression settings
 REGRESSION_TYPE = 'ordinal'  # 'mse', 'mae', or 'ordinal'
