@@ -663,7 +663,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
-    parser.add_argument('--model', type=str, default='models/coin_ordinal_best.pth',
+    parser.add_argument('--model', type=str, default='models/coin_ordinal_best-12-06-2025.pth',
                        help='Path to trained model checkpoint')
     parser.add_argument('--data', type=str, default='davidlawrence_dataset/Circulation',
                        help='Path to dataset directory')

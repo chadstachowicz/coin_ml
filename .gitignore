@@ -17,6 +17,7 @@ images/
 davidlawrence*
 models/
 runs/
+mintmark*
 coin_dataset/
 *.pth
 
@@ -33,6 +34,15 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+
+
+
+
+
+
+
+
 
 
 

@@ -71,7 +71,7 @@ class DavidLawrenceBulkScraper(DavidLawrenceSeleniumScraper):
                     # Load first page
                     self.driver.get(current_url)
                     time.sleep(3)  # Wait for page to load
-                    time.sleep(2)  # Wait for content to render
+
                 except Exception as e:
                     print(f"  ❌ Error loading page: {e}")
                     break
@@ -88,7 +88,6 @@ class DavidLawrenceBulkScraper(DavidLawrenceSeleniumScraper):
                         print(f"  Clicking page {page} button")
                         page_button[0].click()
                         time.sleep(3)
-                        time.sleep(2)
                     else:
                         # Fallback: use URL with page parameter
                         separator = '&' if '?' in listing_url else '?'
@@ -96,7 +95,6 @@ class DavidLawrenceBulkScraper(DavidLawrenceSeleniumScraper):
                         print(f"  Loading via URL: {current_url}")
                         self.driver.get(current_url)
                         time.sleep(3)
-                        time.sleep(2)
                         
                 except Exception as e:
                     print(f"  ❌ Error navigating to page {page}: {e}")
@@ -216,7 +214,7 @@ class DavidLawrenceBulkScraper(DavidLawrenceSeleniumScraper):
         
         return inventory_list
     
-    def scrape_from_listing(self, listing_url, max_pages=None, delay=3, wait_time=3, cache_file=None):
+    def scrape_from_listing(self, listing_url, max_pages=None, delay=3, wait_time=3, cache_file=None, skip_existing=True):
         """
         Discover and scrape all coins from a listing URL.
         
@@ -226,6 +224,7 @@ class DavidLawrenceBulkScraper(DavidLawrenceSeleniumScraper):
             delay: Delay between scraping individual coins
             wait_time: Wait time for each coin page to load
             cache_file: File to save/load discovered IDs
+            skip_existing: If True, skip coins that are already downloaded
             
         Returns:
             list: List of scraped coin data
@@ -237,12 +236,24 @@ class DavidLawrenceBulkScraper(DavidLawrenceSeleniumScraper):
             print("❌ No inventory IDs found")
             return []
         
+        # Check how many are already downloaded
+        if skip_existing:
+            already_downloaded = [inv_id for inv_id in inventory_ids if self.is_coin_downloaded(inv_id)]
+            remaining = len(inventory_ids) - len(already_downloaded)
+        else:
+            already_downloaded = []
+            remaining = len(inventory_ids)
+        
         print(f"\n{'='*60}")
         print(f"Starting bulk scraping of {len(inventory_ids)} coins")
         print(f"{'='*60}")
+        print(f"Total coins: {len(inventory_ids)}")
+        if skip_existing and already_downloaded:
+            print(f"Already downloaded: {len(already_downloaded)}")
+            print(f"Remaining to scrape: {remaining}")
         print(f"Delay between coins: {delay}s")
         print(f"Wait time per page: {wait_time}s")
-        print(f"Estimated time: {len(inventory_ids) * (delay + wait_time + 5) / 60:.1f} minutes")
+        print(f"Estimated time: {remaining * (delay + wait_time + 5) / 60:.1f} minutes")
         print(f"{'='*60}\n")
         
         response = input("Continue? (y/n): ")
@@ -253,7 +264,7 @@ class DavidLawrenceBulkScraper(DavidLawrenceSeleniumScraper):
         # Step 2: Scrape all coins using detected URL format
         url_type = getattr(self, '_detected_url_type', 'inventory')
         print(f"Using URL format: {url_type}\n")
-        return self.scrape_multiple(inventory_ids, delay=delay, wait_time=wait_time, url_type=url_type)
+        return self.scrape_multiple(inventory_ids, delay=delay, wait_time=wait_time, url_type=url_type, skip_existing=skip_existing)
 
 
 def main():
@@ -272,7 +283,13 @@ Examples:
   %(prog)s "https://davidlawrence.com/auctions?coinCategory=25" -o my_coins --delay 5 --wait 5
   
   # Save discovered IDs without scraping
-  %(prog)s "https://davidlawrence.com/auctions?coinCategory=25" --discover-only --save-ids found.txt
+  %(prog)s "https://davidlawrence.com/auctions?coinCategory=25" --discover-only --cache-file found.txt
+  
+  # Resume scraping (automatically skips already-downloaded coins)
+  %(prog)s "https://davidlawrence.com/auctions?coinCategory=25" --cache-file found.txt
+  
+  # Force re-download all coins (even if already scraped)
+  %(prog)s "https://davidlawrence.com/auctions?coinCategory=25" --force-redownload
         ''',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -286,6 +303,7 @@ Examples:
     parser.add_argument('--save-ids', '-s', help='DEPRECATED: Use --cache-file instead')
     parser.add_argument('--discover-only', action='store_true', help='Only discover IDs, don\'t scrape')
     parser.add_argument('--visible', '-v', action='store_true', help='Show browser (not headless)')
+    parser.add_argument('--force-redownload', '-f', action='store_true', help='Re-download coins even if already scraped')
     
     args = parser.parse_args()
     
@@ -316,7 +334,8 @@ Examples:
                 max_pages=args.max_pages,
                 delay=args.delay,
                 wait_time=args.wait,
-                cache_file=cache_file
+                cache_file=cache_file,
+                skip_existing=not args.force_redownload
             )
             
             print(f"\n{'='*60}")

@@ -153,6 +153,7 @@ def process_davidlawrence_coins(source_pattern='davidlawrence_coins*',
         'missing_grade': 0,
         'missing_obverse': 0,
         'missing_reverse': 0,
+        'details_skipped': 0,
         'proof_count': 0,
         'circulation_count': 0,
         'by_grade': defaultdict(int),
@@ -203,6 +204,12 @@ def process_davidlawrence_coins(source_pattern='davidlawrence_coins*',
             
             # Determine if coin is Proof or Circulation based on description
             description = coin_data.get('description', '')
+            
+            # Skip "Details" grades (problem coins: cleaned, damaged, etc.)
+            if 'detail' in description.lower():
+                stats['details_skipped'] += 1
+                continue
+            
             is_proof = 'proof' in description.lower()
             
             # Set the root category folder
@@ -295,6 +302,7 @@ def process_davidlawrence_coins(source_pattern='davidlawrence_coins*',
     print(f"Missing grade: {stats['missing_grade']}")
     print(f"Missing obverse: {stats['missing_obverse']}")
     print(f"Missing reverse: {stats['missing_reverse']}")
+    print(f"Details skipped: {stats['details_skipped']} (problem coins)")
     print("\nCoins by source folder:")
     for source, count in sorted(stats['by_source'].items()):
         print(f"  {source}: {count} pairs")

@@ -63,7 +63,28 @@ class DavidLawrenceSeleniumScraper:
         if hasattr(self, 'driver'):
             self.driver.quit()
     
-    def scrape_coin(self, inventory_id, wait_time=3, url_type='inventory'):
+    def is_coin_downloaded(self, inventory_id):
+        """
+        Check if a coin has already been downloaded.
+        
+        Args:
+            inventory_id: The inventory ID to check
+            
+        Returns:
+            bool: True if coin data and at least one image exist
+        """
+        # Check if JSON file exists
+        json_path = self.data_dir / f"{inventory_id}.json"
+        if not json_path.exists():
+            return False
+        
+        # Check if at least one image exists
+        image_pattern = f"{inventory_id}_image_*"
+        image_files = list(self.images_dir.glob(image_pattern))
+        
+        return len(image_files) > 0
+    
+    def scrape_coin(self, inventory_id, wait_time=3, url_type='inventory', skip_existing=True):
         """
         Scrape a single coin by inventory ID.
         
@@ -71,10 +92,19 @@ class DavidLawrenceSeleniumScraper:
             inventory_id: The inventory ID
             wait_time: Time to wait for page to load (seconds)
             url_type: 'inventory' or 'auction' - determines URL format
+            skip_existing: If True, skip coins that are already downloaded
             
         Returns:
-            dict: Coin data including details and image paths
+            dict: Coin data including details and image paths, or None if skipped
         """
+        # Check if already downloaded
+        if skip_existing and self.is_coin_downloaded(inventory_id):
+            print(f"\n{'='*60}")
+            print(f"✓ ALREADY DOWNLOADED: {inventory_id}")
+            print(f"{'='*60}")
+            print(f"Skipping (data and images already exist)")
+            return {'inventory_id': inventory_id, 'skipped': True}
+        
         # Handle both /inventory/ and /auctions/lot/ URLs
         if url_type == 'auction':
             url = f"{self.BASE_URL}/auctions/lot/{inventory_id}"
@@ -377,7 +407,7 @@ class DavidLawrenceSeleniumScraper:
         
         return coin_data
     
-    def scrape_multiple(self, inventory_ids, delay=3, wait_time=3, url_type='inventory'):
+    def scrape_multiple(self, inventory_ids, delay=3, wait_time=3, url_type='inventory', skip_existing=True):
         """
         Scrape multiple coins by inventory ID.
         
@@ -386,12 +416,28 @@ class DavidLawrenceSeleniumScraper:
             delay: Delay between requests (seconds)
             wait_time: Wait time for each page load
             url_type: 'inventory' or 'auction' - determines URL format
+            skip_existing: If True, skip coins that are already downloaded
             
         Returns:
             list: List of scraped coin data
         """
         results = []
+        skipped = 0
         total = len(inventory_ids)
+        
+        # Check which coins are already downloaded
+        if skip_existing:
+            already_downloaded = [inv_id for inv_id in inventory_ids if self.is_coin_downloaded(inv_id)]
+            if already_downloaded:
+                print(f"\n{'='*60}")
+                print(f"ALREADY DOWNLOADED: {len(already_downloaded)} coins")
+                print(f"{'='*60}")
+                print(f"These coins will be skipped:")
+                for inv_id in already_downloaded[:10]:
+                    print(f"  - {inv_id}")
+                if len(already_downloaded) > 10:
+                    print(f"  ... and {len(already_downloaded) - 10} more")
+                print(f"{'='*60}\n")
         
         print(f"\n{'='*60}")
         print(f"BULK SCRAPING {total} COINS")
@@ -403,10 +449,14 @@ class DavidLawrenceSeleniumScraper:
             print(f"{'='*60}")
             
             try:
-                coin_data = self.scrape_coin(inv_id, wait_time=wait_time, url_type=url_type)
+                coin_data = self.scrape_coin(inv_id, wait_time=wait_time, url_type=url_type, skip_existing=skip_existing)
                 if coin_data:
                     results.append(coin_data)
-                    print(f"✓ Success! ({len(results)}/{idx} successful)")
+                    if coin_data.get('skipped'):
+                        skipped += 1
+                        print(f"✓ Skipped! ({skipped} skipped, {len(results) - skipped} scraped)")
+                    else:
+                        print(f"✓ Success! ({len(results) - skipped} scraped, {skipped} skipped)")
                 else:
                     print(f"⚠️  Failed to scrape coin {inv_id}")
             
@@ -414,18 +464,25 @@ class DavidLawrenceSeleniumScraper:
                 print(f"❌ Error scraping {inv_id}: {e}")
             
             # Progress summary
-            success_rate = (len(results) / idx) * 100
-            print(f"\nProgress: {idx}/{total} ({idx/total*100:.1f}%) | Success rate: {success_rate:.1f}%")
+            scraped_count = len(results) - skipped
+            success_rate = (scraped_count / (idx - skipped)) * 100 if (idx - skipped) > 0 else 0
+            print(f"\nProgress: {idx}/{total} ({idx/total*100:.1f}%) | Scraped: {scraped_count} | Skipped: {skipped} | Success rate: {success_rate:.1f}%")
             
-            # Delay before next request (except for last one)
-            if idx < total:
+            # Delay before next request (except for last one), but only if not skipped
+            if idx < total and not (coin_data and coin_data.get('skipped')):
                 print(f"Waiting {delay}s before next coin...")
                 time.sleep(delay)
+        
+        scraped_count = len(results) - skipped
         
         print(f"\n{'='*60}")
         print(f"✓ BULK SCRAPING COMPLETE")
         print(f"{'='*60}")
-        print(f"Successfully scraped: {len(results)}/{total} ({len(results)/total*100:.1f}%)")
+        print(f"Total processed: {len(results)}/{total}")
+        print(f"Newly scraped: {scraped_count}")
+        print(f"Skipped (already downloaded): {skipped}")
+        if scraped_count > 0:
+            print(f"Success rate (of attempted): {(scraped_count/(len(results)-skipped)*100):.1f}%")
         print(f"{'='*60}\n")
         
         return results

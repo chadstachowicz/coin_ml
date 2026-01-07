@@ -1,24 +1,22 @@
 """
-Ordinal Regression for Coin Grading
+Ordinal Regression for Coin Grading - ConvNeXt-Small
 
-Instead of treating grades as independent classes (classification),
-treat them as ordered values (regression/ordinal regression).
+Uses ConvNeXt-Small backbone instead of ResNet-50.
+ConvNeXt is a modernized ConvNet that matches Vision Transformer performance
+while maintaining the simplicity of standard ConvNets.
 
-Two approaches:
-1. Simple Regression: MSE/MAE on normalized Sheldon grades
-2. Ordinal Regression: Explicitly model the ordering with ranked predictions
-
-Advantages:
-- Penalizes being off by 10 grades more than off by 1 grade
-- More natural for the Sheldon scale (which is inherently ordered)
-- Better evaluation metrics (MAE in actual grade numbers)
-- Can predict intermediate values (e.g., "between MS64 and MS65")
+Key differences from ResNet:
+- Uses depthwise separable convolutions
+- Layer normalization instead of batch normalization
+- GELU activation instead of ReLU
+- Larger kernel sizes (7x7)
+- Better accuracy/compute tradeoff
 
 Features:
 - Dual-image input (obverse + reverse)
-- ResNet-50 backbone
+- ConvNeXt-Small backbone (768-dim features)
 - Company-conditioned (optional)
-- Multiple loss functions: MSE, MAE, Ordinal
+- Step-based ordinal regression
 """
 
 import torch
@@ -28,7 +26,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
-from torchvision.models import resnet50, ResNet50_Weights
+from torchvision.models import convnext_small, ConvNeXt_Small_Weights
 
 import os
 import json
@@ -47,50 +45,39 @@ import re
 
 # Paths
 DATA_DIR = 'davidlawrence_dataset/Circulation'
-#DATA_DIR = 'davidlawrence_data_indians/Circulation'
 OUTPUT_DIR = 'models'
-LOG_DIR = 'runs/ordinal_' + datetime.now().strftime('%Y%m%d_%H%M%S')
+LOG_DIR = 'runs/convnext_' + datetime.now().strftime('%Y%m%d_%H%M%S')
 
 # Model hyperparameters
 IMAGE_SIZE = 512
-BATCH_SIZE = 16
+BATCH_SIZE = 16  # ConvNeXt uses more memory, may need smaller batch
 NUM_EPOCHS = 50
 LEARNING_RATE = 1e-3
 FREEZE_BACKBONE = True
-UNFREEZE_EPOCH = 7
+UNFREEZE_EPOCH = 5
 
 # Regression settings
 REGRESSION_TYPE = 'ordinal'  # 'mse', 'mae', or 'ordinal'
-USE_COMPANY_CONDITIONING = True  # Include company as input
+USE_COMPANY_CONDITIONING = False  # Include company as input
 COMPANY_EMBEDDING_DIM = 32
 
 # Preprocessing settings
-# Set to False if using pre-processed images (davidlawrence_preprocessed/)
-# Set to True if using raw images (davidlawrence_dataset/)
 USE_PREPROCESSING = False  # Hough circle detection + white background
 
 # ============================================================================
 # COMPANY BIAS (in steps - applied during training)
 # ============================================================================
-# Positive = company grades stricter → bump their labeled grade UP
-# Negative = company grades looser → bump their labeled grade DOWN
-# 
-# Example: If CACG's MS64 looks like PCGS's MS65, set CACG to +1.0
-#          This teaches the model that CACG MS64 = step position of MS65
-#
-# Set to 0 for companies with no known bias or as baseline (usually PCGS)
 COMPANY_BIAS = {
-    'PCGS': 0.0,      # Baseline - most common reference
+    'PCGS': 0.0,      # Baseline
     'NGC':  0.0,      # Generally comparable to PCGS
     'CACG': 0.5,      # CAC Grading - tends to grade stricter
-    'ANAC': 0.0,      # ANACS - adjust if needed
+    'ANAC': 0.0,      # ANACS
     'ICG':  0.0,      # ICG
     'SEGS': 0.0,      # SEGS
-    # Add more as needed
 }
-USE_COMPANY_BIAS = True  # Set to False to disable bias adjustment
+USE_COMPANY_BIAS = True
 
-# Grade normalization (Sheldon scale typically 1-70)
+# Grade normalization
 GRADE_MIN = 1.0
 GRADE_MAX = 70.0
 
@@ -112,7 +99,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
 print("="*70)
-print("ORDINAL REGRESSION COIN GRADING")
+print("CONVNEXT-SMALL ORDINAL REGRESSION COIN GRADING")
 print("="*70)
 print(f"Device: {DEVICE}")
 print(f"Regression type: {REGRESSION_TYPE}")
@@ -132,12 +119,9 @@ print("="*70)
 # HELPER FUNCTIONS - STEP-BASED ENCODING
 # ============================================================================
 
-# Valid grades in the grading scale (each step = 1 in loss function)
-# This ensures VF25→VF30 and MS64→MS65 are treated equally!
 VALID_GRADES = [2, 3, 4, 6, 8, 10, 12, 15, 20, 25, 30, 35, 40, 45,
                 50, 53, 55, 58, 60, 61, 62, 63, 64, 65, 66, 67, 68]
 
-# Create mappings
 GRADE_TO_STEP = {grade: step for step, grade in enumerate(VALID_GRADES)}
 STEP_TO_GRADE = {step: grade for step, grade in enumerate(VALID_GRADES)}
 NUM_STEPS = len(VALID_GRADES)
@@ -148,22 +132,11 @@ print(f"  Each step = 1 in loss function (uniform penalty)")
 
 
 def parse_sheldon_grade(grade_str):
-    """
-    Convert grade string to numeric Sheldon scale.
-    
-    Examples:
-        'ms64' -> 64
-        'au58' -> 58
-        'xf40' -> 40
-        'vf20' -> 20
-        'g04' -> 4
-    """
-    # Extract the numeric part
+    """Convert grade string to numeric Sheldon scale."""
     match = re.search(r'(\d+)', grade_str.lower())
     if match:
         return float(match.group(1))
     
-    # Fallback mapping for non-standard grades
     grade_map = {
         'poor': 1, 'fr': 2, 'ag': 3, 'g': 4, 'vg': 8,
         'f': 12, 'vf': 20, 'xf': 40, 'au': 50, 'ms': 60
@@ -174,13 +147,11 @@ def parse_sheldon_grade(grade_str):
         if key in grade_lower:
             return float(val)
     
-    # Default
     return 50.0
 
 
 def sheldon_to_step(sheldon_grade):
     """Convert Sheldon grade to step position (0 to NUM_STEPS-1)."""
-    # Round to nearest valid grade first
     rounded = round_to_valid_grade(sheldon_grade)
     return GRADE_TO_STEP.get(rounded, NUM_STEPS // 2)
 
@@ -193,27 +164,15 @@ def step_to_sheldon(step):
 
 
 def normalize_grade(sheldon_grade):
-    """
-    Normalize grade to [0, 1] range using STEP-BASED encoding.
-    
-    This ensures each grade step contributes equally to the loss:
-    - VF25 → VF30 = 1 step = same penalty as MS64 → MS65
-    """
+    """Normalize grade to [0, 1] range using STEP-BASED encoding."""
     step = sheldon_to_step(sheldon_grade)
     return float(step / (NUM_STEPS - 1))
 
 
 def denormalize_grade(normalized_grade):
-    """
-    Convert normalized grade back to Sheldon scale.
-    
-    Input: normalized value in [0, 1]
-    Output: Sheldon grade number
-    """
+    """Convert normalized grade back to Sheldon scale."""
     if isinstance(normalized_grade, torch.Tensor):
-        # Convert to step, then to Sheldon
         steps = normalized_grade * (NUM_STEPS - 1)
-        # Vectorized conversion
         result = torch.zeros_like(steps)
         for i, s in enumerate(steps):
             result[i] = step_to_sheldon(s.item())
@@ -233,41 +192,22 @@ def round_to_valid_grade(grade):
 # ============================================================================
 
 def preprocess_coin_image(pil_image, output_size=None):
-    """
-    Preprocess coin image with Hough circle detection and white background.
-    
-    Same preprocessing as inference to ensure consistency:
-    1. Detect coin using Hough Circle Transform
-    2. Create circular mask at detected position
-    3. Blend onto white background
-    4. Crop and resize
-    
-    Args:
-        pil_image: PIL Image
-        output_size: Output size (if None, keeps original aspect)
-    
-    Returns:
-        Preprocessed PIL Image on white background
-    """
-    # Convert PIL to OpenCV format
+    """Preprocess coin image with Hough circle detection and white background."""
     img_rgb = np.array(pil_image)
     img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
     
     height, width = img_bgr.shape[:2]
     min_dim = min(height, width)
     
-    # Convert to grayscale for circle detection
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (9, 9), 2)
     
-    # Hough Circle Transform
     circles = cv2.HoughCircles(
         blurred, cv2.HOUGH_GRADIENT, dp=1, minDist=min_dim // 2,
         param1=50, param2=30,
         minRadius=int(min_dim * 0.2), maxRadius=int(min_dim * 0.5)
     )
     
-    # Try with more lenient parameters if first attempt fails
     if circles is None:
         circles = cv2.HoughCircles(
             blurred, cv2.HOUGH_GRADIENT, dp=1.2, minDist=min_dim // 3,
@@ -275,7 +215,6 @@ def preprocess_coin_image(pil_image, output_size=None):
             minRadius=int(min_dim * 0.15), maxRadius=int(min_dim * 0.55)
         )
     
-    # Default to center crop if no circle detected
     if circles is None:
         cx, cy = width // 2, height // 2
         radius = min_dim // 2 - 10
@@ -283,20 +222,15 @@ def preprocess_coin_image(pil_image, output_size=None):
         circles = np.uint16(np.around(circles))
         cx, cy, radius = circles[0][0]
     
-    # Create circular mask on original image
-    mask_radius = int(radius * 1.02)  # Slight padding
+    mask_radius = int(radius * 1.02)
     mask = np.zeros(img_bgr.shape[:2], dtype=np.uint8)
     cv2.circle(mask, (int(cx), int(cy)), mask_radius, 255, -1)
-    
-    # Feather mask edges for smooth transition
     mask = cv2.GaussianBlur(mask, (7, 7), 0)
     
-    # Create white background and blend
     white_img = np.ones_like(img_bgr) * 255
     mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR).astype(float) / 255.0
     blended = (img_bgr.astype(float) * mask_3ch + white_img.astype(float) * (1 - mask_3ch)).astype(np.uint8)
     
-    # Crop to bounding box of the coin
     padding = int(radius * 0.05)
     crop_radius = radius + padding
     x1 = max(0, int(cx - crop_radius))
@@ -306,7 +240,6 @@ def preprocess_coin_image(pil_image, output_size=None):
     
     cropped = blended[y1:y2, x1:x2]
     
-    # If output size specified, resize to square
     if output_size is not None:
         white_bg = np.ones((output_size, output_size, 3), dtype=np.uint8) * 255
         
@@ -324,12 +257,10 @@ def preprocess_coin_image(pil_image, output_size=None):
             
             cropped = white_bg
     
-    # Convert back to PIL (RGB)
     result_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
     return Image.fromarray(result_rgb)
 
 
-# Print preprocessing status
 print(f"Hough circle preprocessing: {'ENABLED' if USE_PREPROCESSING else 'DISABLED'}")
 
 
@@ -346,15 +277,12 @@ class OrdinalCoinDataset(Dataset):
         self.use_company = use_company
         self.samples = []
         
-        # Company mapping
         self.company_to_idx = {}
         self.idx_to_company = {}
         
-        # Grade statistics
         self.grade_min = float('inf')
         self.grade_max = float('-inf')
         
-        # Collect samples
         temp_samples = []
         companies = set()
         
@@ -379,11 +307,9 @@ class OrdinalCoinDataset(Dataset):
                 reverse_img = reverse_dir / obverse_img.name
                 
                 if reverse_img.exists():
-                    # Parse company from filename
                     parts = obverse_img.stem.split('-')
                     company = parts[1] if len(parts) >= 2 else 'UNKNOWN'
                     
-                    # Skip unwanted companies
                     if company in ['OTHE', 'THAT', 'NONE']:
                         continue
                     
@@ -397,39 +323,28 @@ class OrdinalCoinDataset(Dataset):
                         'company': company
                     })
         
-        # Create company mapping
         for company_idx, company in enumerate(sorted(companies)):
             self.company_to_idx[company] = company_idx
             self.idx_to_company[company_idx] = company
         
-        # Add company indices
         for sample in temp_samples:
             sample['company_idx'] = self.company_to_idx[sample['company']]
         
         self.samples = temp_samples
         
-        # 70/15/15 split (train/val/test)
         np.random.seed(42)
         indices = np.random.permutation(len(self.samples))
-        n_total = len(self.samples)
-        n_train = int(0.70 * n_total)
-        n_val = int(0.15 * n_total)
-        # n_test = remaining samples
+        n_train = int(0.8 * len(self.samples))
         
         if split == 'train':
             indices = indices[:n_train]
-        elif split == 'val':
-            indices = indices[n_train:n_train + n_val]
-        else:  # test
-            indices = indices[n_train + n_val:]
+        else:
+            indices = indices[n_train:]
         
         self.samples = [self.samples[i] for i in indices]
         
-        # Statistics
         from collections import Counter
         grade_counts = Counter([s['grade_name'] for s in self.samples])
-        company_counts = Counter([s['company'] for s in self.samples])
-        
         grades = [s['grade_value'] for s in self.samples]
         
         print(f"\n{split.upper()}: {len(self.samples)} samples")
@@ -447,7 +362,6 @@ class OrdinalCoinDataset(Dataset):
         obverse = Image.open(sample['obverse']).convert('RGB')
         reverse = Image.open(sample['reverse']).convert('RGB')
         
-        # Apply Hough circle preprocessing (same as inference)
         if USE_PREPROCESSING:
             obverse = preprocess_coin_image(obverse, output_size=IMAGE_SIZE)
             reverse = preprocess_coin_image(reverse, output_size=IMAGE_SIZE)
@@ -456,16 +370,12 @@ class OrdinalCoinDataset(Dataset):
             obverse = self.transform(obverse)
             reverse = self.transform(reverse)
         
-        # Normalize grade to [0, 1] - use float32 for MPS compatibility
         normalized_grade = normalize_grade(sample['grade_value'])
         
-        # Apply company bias (in steps, converted to normalized space)
         if USE_COMPANY_BIAS and sample['company'] in COMPANY_BIAS:
             bias_steps = COMPANY_BIAS[sample['company']]
-            # Convert step bias to normalized space: bias_steps / (NUM_STEPS - 1)
             bias_normalized = bias_steps / (NUM_STEPS - 1)
             normalized_grade = normalized_grade + bias_normalized
-            # Clamp to valid range
             normalized_grade = max(0.0, min(1.0, normalized_grade))
         
         normalized_grade = torch.tensor(normalized_grade, dtype=torch.float32)
@@ -481,7 +391,6 @@ class OrdinalCoinDataset(Dataset):
 # DATA TRANSFORMS
 # ============================================================================
 
-# Build transforms - skip Resize if preprocessing handles it
 _train_transforms = []
 _val_transforms = []
 
@@ -517,19 +426,24 @@ val_transform = transforms.Compose(_val_transforms)
 
 
 # ============================================================================
-# ORDINAL REGRESSION MODEL
+# CONVNEXT ORDINAL REGRESSION MODEL
 # ============================================================================
 
-class OrdinalRegressionResNet(nn.Module):
+class OrdinalRegressionConvNeXt(nn.Module):
     """
-    ResNet for ordinal regression.
+    ConvNeXt-Small for ordinal regression.
+    
+    ConvNeXt-Small specs:
+    - Feature dimension: 768 (vs 2048 for ResNet-50)
+    - ~50M parameters
+    - Better accuracy than ResNet at similar compute
     
     Outputs a single continuous value (normalized grade).
     Optionally conditioned on grading company.
     """
     
     def __init__(self, num_companies=None, company_embedding_dim=32, freeze_backbone=True):
-        super(OrdinalRegressionResNet, self).__init__()
+        super(OrdinalRegressionConvNeXt, self).__init__()
         
         self.use_company = num_companies is not None
         
@@ -537,64 +451,75 @@ class OrdinalRegressionResNet(nn.Module):
         if self.use_company:
             self.company_embedding = nn.Embedding(num_companies, company_embedding_dim)
         
-        # Load pretrained ResNet-50
-        weights = ResNet50_Weights.IMAGENET1K_V2
-        obverse_resnet = resnet50(weights=weights)
-        reverse_resnet = resnet50(weights=weights)
+        # Load pretrained ConvNeXt-Small
+        weights = ConvNeXt_Small_Weights.IMAGENET1K_V1
+        obverse_convnext = convnext_small(weights=weights)
+        reverse_convnext = convnext_small(weights=weights)
         
-        # Encoders
-        self.obverse_encoder = nn.Sequential(*list(obverse_resnet.children())[:-1])
-        self.reverse_encoder = nn.Sequential(*list(reverse_resnet.children())[:-1])
+        # ConvNeXt structure: features -> avgpool -> classifier
+        # We want features + avgpool, excluding the classifier
+        self.obverse_features = obverse_convnext.features
+        self.obverse_avgpool = obverse_convnext.avgpool
+        
+        self.reverse_features = reverse_convnext.features
+        self.reverse_avgpool = reverse_convnext.avgpool
         
         if freeze_backbone:
-            for param in self.obverse_encoder.parameters():
+            for param in self.obverse_features.parameters():
                 param.requires_grad = False
-            for param in self.reverse_encoder.parameters():
+            for param in self.reverse_features.parameters():
                 param.requires_grad = False
-            print("✓ Backbone frozen")
+            print("✓ ConvNeXt backbone frozen")
         
-        self.feature_dim = 2048
+        # ConvNeXt-Small outputs 768-dimensional features
+        self.feature_dim = 768
         
         # Fusion layer
         fusion_input_dim = self.feature_dim * 2
         if self.use_company:
             fusion_input_dim += company_embedding_dim
         
+        # Use LayerNorm instead of BatchNorm to match ConvNeXt style
         self.fusion = nn.Sequential(
-            nn.Linear(fusion_input_dim, 2048),
-            nn.BatchNorm1d(2048),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2)
+            nn.Linear(fusion_input_dim, 1024),
+            nn.LayerNorm(1024),
+            nn.GELU(),  # ConvNeXt uses GELU
         )
         
         # Regression head (outputs single value in [0, 1])
         self.regression_head = nn.Sequential(
-            nn.Linear(2048, 1024),
-            nn.BatchNorm1d(1024),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
             nn.Linear(1024, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            nn.Linear(512, 1),
-            nn.Sigmoid()  # Output in [0, 1]
+            nn.LayerNorm(512),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 1),
+            nn.Sigmoid()
         )
     
     def unfreeze_backbone(self):
-        for param in self.obverse_encoder.parameters():
+        """Unfreeze the ConvNeXt backbone for fine-tuning."""
+        for param in self.obverse_features.parameters():
             param.requires_grad = True
-        for param in self.reverse_encoder.parameters():
+        for param in self.reverse_features.parameters():
             param.requires_grad = True
-        print("✓ Backbone unfrozen")
+        print("✓ ConvNeXt backbone unfrozen")
     
     def forward(self, obverse, reverse, company_idx=None):
-        # Encode images
-        obverse_feat = self.obverse_encoder(obverse).view(obverse.size(0), -1)
-        reverse_feat = self.reverse_encoder(reverse).view(reverse.size(0), -1)
+        # Encode images through ConvNeXt
+        # features output: [B, 768, H/32, W/32]
+        # avgpool output: [B, 768, 1, 1]
+        obverse_feat = self.obverse_avgpool(self.obverse_features(obverse))
+        obverse_feat = obverse_feat.view(obverse.size(0), -1)  # [B, 768]
+        
+        reverse_feat = self.reverse_avgpool(self.reverse_features(reverse))
+        reverse_feat = reverse_feat.view(reverse.size(0), -1)  # [B, 768]
         
         # Concatenate features
-        combined = torch.cat([obverse_feat, reverse_feat], dim=1)
+        combined = torch.cat([obverse_feat, reverse_feat], dim=1)  # [B, 1536]
         
         # Add company embedding if available
         if self.use_company and company_idx is not None:
@@ -603,7 +528,7 @@ class OrdinalRegressionResNet(nn.Module):
         
         # Fusion + regression
         fused = self.fusion(combined)
-        output = self.regression_head(fused).squeeze(-1)  # [batch_size]
+        output = self.regression_head(fused).squeeze(-1)
         
         return output
 
@@ -613,23 +538,13 @@ class OrdinalRegressionResNet(nn.Module):
 # ============================================================================
 
 class OrdinalLoss(nn.Module):
-    """
-    Ordinal regression loss.
-    
-    Penalizes predictions based on distance from true grade:
-    - Off by 1 grade: small penalty
-    - Off by 10 grades: large penalty
-    
-    Uses squared error but on the ordinal scale.
-    """
+    """Ordinal regression loss using squared error."""
     
     def __init__(self, reduction='mean'):
         super(OrdinalLoss, self).__init__()
         self.reduction = reduction
     
     def forward(self, predictions, targets):
-        # Both in [0, 1] normalized space
-        # Squared error naturally penalizes larger distances more
         se = (predictions - targets) ** 2
         
         if self.reduction == 'mean':
@@ -657,51 +572,21 @@ def get_loss_function(loss_type):
 # ============================================================================
 
 def compute_mae_in_steps(predictions, targets):
-    """
-    Compute Mean Absolute Error in STEPS (not Sheldon points).
-    
-    Since we use step-based encoding, predictions and targets are already
-    in normalized step space [0, 1]. We just convert back to steps.
-    
-    Args:
-        predictions: normalized predictions [0, 1]
-        targets: normalized targets [0, 1]
-    
-    Returns:
-        MAE in grade steps (e.g., 1.5 means average error of 1.5 grade steps)
-    """
-    # Convert from [0, 1] back to step positions
+    """Compute Mean Absolute Error in STEPS."""
     pred_steps = predictions * (NUM_STEPS - 1)
     true_steps = targets * (NUM_STEPS - 1)
-    
-    # MAE in steps
     mae = torch.abs(pred_steps - true_steps).mean()
     return mae.item()
 
 
 def compute_accuracy_within_n_steps(predictions, targets, n=1):
-    """
-    Compute accuracy: % of predictions within N steps of truth.
-    
-    Since we use step-based encoding, this is straightforward.
-    
-    Args:
-        predictions: normalized predictions [0, 1]
-        targets: normalized targets [0, 1]
-        n: tolerance in grade steps
-    
-    Returns:
-        Accuracy (0-100)
-    """
-    # Convert from [0, 1] back to step positions
+    """Compute accuracy: % of predictions within N steps of truth."""
     pred_steps = predictions * (NUM_STEPS - 1)
     true_steps = targets * (NUM_STEPS - 1)
     
-    # Round to nearest step
     pred_rounded = torch.round(pred_steps)
     true_rounded = torch.round(true_steps)
     
-    # Count within n steps
     step_diff = torch.abs(pred_rounded - true_rounded)
     correct_count = (step_diff <= n).sum().item()
     
@@ -725,26 +610,23 @@ def train_epoch(model, loader, criterion, optimizer, device, epoch, use_company)
             obverse, reverse, targets, company_idx, _ = batch
             obverse = obverse.to(device)
             reverse = reverse.to(device)
-            targets = targets.to(device, dtype=torch.float32)  # Explicit float32 for MPS
+            targets = targets.to(device, dtype=torch.float32)
             company_idx = company_idx.to(device)
         else:
             obverse, reverse, targets, _ = batch
             obverse = obverse.to(device)
             reverse = reverse.to(device)
-            targets = targets.to(device, dtype=torch.float32)  # Explicit float32 for MPS
+            targets = targets.to(device, dtype=torch.float32)
             company_idx = None
         
         optimizer.zero_grad()
         
-        # Forward
         predictions = model(obverse, reverse, company_idx)
         loss = criterion(predictions, targets)
         
-        # Backward
         loss.backward()
         optimizer.step()
         
-        # Statistics
         batch_size = obverse.size(0)
         running_loss += loss.item() * batch_size
         
@@ -753,7 +635,6 @@ def train_epoch(model, loader, criterion, optimizer, device, epoch, use_company)
         
         pbar.set_postfix({'loss': f'{loss.item():.4f}'})
     
-    # Metrics
     all_preds = torch.cat(all_preds)
     all_targets = torch.cat(all_targets)
     
@@ -777,13 +658,13 @@ def validate(model, loader, criterion, device, use_company):
                 obverse, reverse, targets, company_idx, _ = batch
                 obverse = obverse.to(device)
                 reverse = reverse.to(device)
-                targets = targets.to(device, dtype=torch.float32)  # Explicit float32 for MPS
+                targets = targets.to(device, dtype=torch.float32)
                 company_idx = company_idx.to(device)
             else:
                 obverse, reverse, targets, _ = batch
                 obverse = obverse.to(device)
                 reverse = reverse.to(device)
-                targets = targets.to(device, dtype=torch.float32)  # Explicit float32 for MPS
+                targets = targets.to(device, dtype=torch.float32)
                 company_idx = None
             
             predictions = model(obverse, reverse, company_idx)
@@ -797,7 +678,6 @@ def validate(model, loader, criterion, device, use_company):
             
             pbar.set_postfix({'loss': f'{loss.item():.4f}'})
     
-    # Metrics
     all_preds = torch.cat(all_preds)
     all_targets = torch.cat(all_targets)
     
@@ -813,53 +693,47 @@ def validate(model, loader, criterion, device, use_company):
 # ============================================================================
 
 if __name__ == '__main__':
-    print("\nCreating datasets (70/15/15 split)...")
+    print("\nCreating datasets...")
     train_dataset = OrdinalCoinDataset(
         DATA_DIR, split='train', transform=train_transform,
-        use_company=USE_COMPANY_CONDITIONING
-    )
-    val_dataset = OrdinalCoinDataset(
-        DATA_DIR, split='val', transform=val_transform,
         use_company=USE_COMPANY_CONDITIONING
     )
     test_dataset = OrdinalCoinDataset(
         DATA_DIR, split='test', transform=val_transform,
         use_company=USE_COMPANY_CONDITIONING
     )
+    val_dataset = test_dataset
     
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-        num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=BATCH_SIZE, shuffle=False,
         num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY
     )
     test_loader = DataLoader(
         test_dataset, batch_size=BATCH_SIZE, shuffle=False,
         num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY
     )
+    val_loader = test_loader
     
     print(f"\nDataloaders created:")
     print(f"  Train: {len(train_loader)} batches")
-    print(f"  Val: {len(val_loader)} batches")
-    print(f"  Test: {len(test_loader)} batches")
+    print(f"  Test/Val: {len(test_loader)} batches")
     
     # Create model
     num_companies = len(train_dataset.company_to_idx) if USE_COMPANY_CONDITIONING else None
     
-    model = OrdinalRegressionResNet(
+    model = OrdinalRegressionConvNeXt(
         num_companies=num_companies,
         company_embedding_dim=COMPANY_EMBEDDING_DIM,
         freeze_backbone=FREEZE_BACKBONE
     )
     model = model.to(DEVICE)
     
-    print(f"\nModel created:")
+    print(f"\nModel created (ConvNeXt-Small):")
     print(f"  Regression type: {REGRESSION_TYPE}")
     print(f"  Company conditioning: {USE_COMPANY_CONDITIONING}")
     if USE_COMPANY_CONDITIONING:
         print(f"  Companies: {num_companies}")
+    print(f"  Feature dim: 768 (ConvNeXt-Small)")
     print(f"  Total params: {sum(p.numel() for p in model.parameters()):,}")
     print(f"  Trainable: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
     
@@ -886,10 +760,10 @@ if __name__ == '__main__':
     }
     
     best_mae = float('inf')
-    best_model_path = os.path.join(OUTPUT_DIR, 'coin_ordinal_best.pth')
+    best_model_path = os.path.join(OUTPUT_DIR, 'coin_convnext_best.pth')
     
     print("\n" + "="*70)
-    print("STARTING ORDINAL REGRESSION TRAINING")
+    print("STARTING CONVNEXT ORDINAL REGRESSION TRAINING")
     print("="*70)
     
     for epoch in range(NUM_EPOCHS):
@@ -897,7 +771,7 @@ if __name__ == '__main__':
         
         # Unfreeze backbone
         if FREEZE_BACKBONE and epoch == UNFREEZE_EPOCH:
-            print(f"\n🔓 Unfreezing backbone")
+            print(f"\n🔓 Unfreezing ConvNeXt backbone")
             model.unfreeze_backbone()
             optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE/10, weight_decay=0.01)
             # Recreate scheduler for the new optimizer
@@ -961,16 +835,17 @@ if __name__ == '__main__':
                 'num_steps': NUM_STEPS,
                 'regression_type': REGRESSION_TYPE,
                 'use_company': USE_COMPANY_CONDITIONING,
-                'encoding': 'step_based',  # Mark this model as step-based
+                'encoding': 'step_based',
                 'company_bias': COMPANY_BIAS if USE_COMPANY_BIAS else None,
-                'use_company_bias': USE_COMPANY_BIAS
+                'use_company_bias': USE_COMPANY_BIAS,
+                'backbone': 'convnext_small'  # Mark the backbone type
             }, best_model_path)
             print(f"  ✓ New best! MAE: {val_mae:.2f} steps")
     
     writer.close()
     
     # Save results
-    with open(os.path.join(OUTPUT_DIR, 'history_ordinal.json'), 'w') as f:
+    with open(os.path.join(OUTPUT_DIR, 'history_convnext.json'), 'w') as f:
         json.dump(history, f, indent=2)
     
     print(f"\n{'='*70}")
@@ -978,9 +853,16 @@ if __name__ == '__main__':
     print("="*70)
     print(f"Best MAE: {best_mae:.2f} steps")
     print(f"Model saved: {best_model_path}")
-    print("\n💡 Step-based encoding means:")
-    print(f"   - VF25→VF30 = 1 step (same penalty as MS64→MS65)")
-    print(f"   - MAE: Mean Absolute Error in grade STEPS")
-    print(f"   - ±1: Within 1 step (e.g., MS64↔MS65, VF25↔VF30)")
-    print(f"   - ±2: Within 2 steps (e.g., MS64↔MS66, VF25↔VF35)")
+    print("\n💡 ConvNeXt-Small advantages:")
+    print("   - Modern architecture (2022) with transformer-inspired designs")
+    print("   - LayerNorm + GELU activation (better than BatchNorm + ReLU)")
+    print("   - Better accuracy/compute tradeoff than ResNet")
+    print("   - 768-dim features (more compact than ResNet's 2048)")
+
+
+
+
+
+
+
 
